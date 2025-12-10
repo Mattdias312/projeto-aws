@@ -1,4 +1,6 @@
+// Carregar variáveis de ambiente do .env
 require('dotenv').config();
+
 const express = require('express');
 const multer = require('multer');
 const swaggerUi = require('swagger-ui-express');
@@ -10,20 +12,32 @@ const { randomUUID } = require('crypto');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Limpar variáveis de ambiente AWS inválidas para forçar uso de IAM Role ou arquivo de credenciais
-// Isso garante que não usaremos credenciais expiradas ou inválidas
-delete process.env.AWS_ACCESS_KEY_ID;
-delete process.env.AWS_SECRET_ACCESS_KEY;
-delete process.env.AWS_SESSION_TOKEN;
-delete process.env.AWS_SECURITY_TOKEN;
+// IMPORTANTE: Remover credenciais AWS inválidas do ambiente
+// O dotenv pode ter carregado credenciais expiradas do arquivo .env
+// Isso força o AWS SDK a usar IAM Role (prioridade) ou arquivo ~/.aws/credentials
+const awsEnvVars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN'];
+let removedVars = [];
+awsEnvVars.forEach(key => {
+  if (process.env[key]) {
+    removedVars.push(key);
+    delete process.env[key];
+  }
+});
 
-// Configuração AWS - usando detecção automática de credenciais
-// O AWS SDK detectará automaticamente credenciais através de:
-// 1. IAM Role (se estiver rodando em EC2/ECS/Lambda) - PRIORIDADE
+if (removedVars.length > 0) {
+  console.log(`⚠️  Removidas variáveis de ambiente AWS inválidas: ${removedVars.join(', ')}`);
+  console.log(`   O AWS SDK usará IAM Role ou arquivo ~/.aws/credentials`);
+}
+
+// Configuração AWS - sem credenciais explícitas
+// O AWS SDK detectará automaticamente na seguinte ordem:
+// 1. IAM Role (EC2 Instance Profile) - PRIORIDADE MÁXIMA
 // 2. Arquivo de credenciais (~/.aws/credentials)
 // 3. Perfil AWS configurado (~/.aws/config)
+// NOTA: Variáveis de ambiente AWS_* foram removidas acima
 const awsConfig = {
   region: process.env.AWS_REGION || 'us-east-1',
+  // Não passar credentials - deixar o SDK usar detecção automática
 };
 
 const dynamoClient = new DynamoDBClient(awsConfig);
@@ -357,22 +371,69 @@ app.get('/health/aws', async (req, res) => {
       region: awsConfig.region,
       dynamodbTable: TABLE_NAME || 'NÃO DEFINIDA',
       s3Bucket: BUCKET_NAME || 'NÃO DEFINIDO',
+      authentication: {
+        method: 'Detecção automática',
+        note: 'Variáveis de ambiente AWS_* foram removidas. Usando IAM Role ou ~/.aws/credentials'
+      },
       checks: {}
     };
 
+    // Tentar verificar se IAM Role está disponível (apenas em EC2)
+    try {
+      const http = require('http');
+      const metadataUrl = 'http://169.254.169.254/latest/meta-data/iam/security-credentials/';
+      
+      await new Promise((resolve) => {
+        const request = http.get(metadataUrl, { timeout: 1000 }, (response) => {
+          let data = '';
+          response.on('data', chunk => data += chunk);
+          response.on('end', () => {
+            if (response.statusCode === 200 && data.trim()) {
+              diagnostics.authentication.iamRole = data.trim().split('\n')[0];
+              diagnostics.authentication.method = 'IAM Role detectada';
+            }
+            resolve();
+          });
+        });
+        request.on('error', () => {
+          // Não é EC2 ou IAM Role não disponível - isso é normal
+          diagnostics.authentication.iamRole = 'Não detectada (pode estar usando ~/.aws/credentials)';
+          resolve();
+        });
+        request.on('timeout', () => {
+          request.destroy();
+          diagnostics.authentication.iamRole = 'Não detectada (timeout ao verificar)';
+          resolve();
+        });
+      });
+    } catch (e) {
+      // Ignorar erros de verificação de IAM Role
+      diagnostics.authentication.iamRole = 'Não detectada (erro ao verificar)';
+    }
+
     // Teste DynamoDB
     try {
-      const testCommand = new ScanCommand({
-        TableName: TABLE_NAME,
-        Limit: 1
-      });
-      await docClient.send(testCommand);
-      diagnostics.checks.dynamodb = { status: 'OK', message: 'Conexão com DynamoDB funcionando' };
+      if (!TABLE_NAME) {
+        diagnostics.checks.dynamodb = { 
+          status: 'ERRO', 
+          message: 'DYNAMODB_TABLE_NAME não está definido' 
+        };
+      } else {
+        const testCommand = new ScanCommand({
+          TableName: TABLE_NAME,
+          Limit: 1
+        });
+        await docClient.send(testCommand);
+        diagnostics.checks.dynamodb = { status: 'OK', message: 'Conexão com DynamoDB funcionando' };
+      }
     } catch (error) {
       diagnostics.checks.dynamodb = { 
         status: 'ERRO', 
         message: error.message,
-        errorType: error.name 
+        errorType: error.name,
+        suggestion: error.name === 'UnrecognizedClientException' 
+          ? 'Verifique se a IAM Role tem permissões para DynamoDB ou configure ~/.aws/credentials'
+          : 'Verifique as configurações do DynamoDB'
       };
     }
 
@@ -385,7 +446,10 @@ app.get('/health/aws', async (req, res) => {
       diagnostics.checks.s3 = { 
         status: 'ERRO', 
         message: error.message,
-        errorType: error.name 
+        errorType: error.name,
+        suggestion: error.name === 'UnrecognizedClientException'
+          ? 'Verifique se a IAM Role tem permissões para S3 ou configure ~/.aws/credentials'
+          : 'Verifique as configurações do S3'
       };
     }
 
