@@ -95,7 +95,7 @@ const swaggerDocument = {
                   emailCliente: { type: 'string', example: 'cliente@email.com' },
                   nomeCliente: { type: 'string', example: 'João Silva' },
                   valor: { type: 'number', example: 150.50 },
-                  status: { type: 'string', enum: ['RECEBIDO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIDO' },
+                  status: { type: 'string', enum: ['RECEBIMENTO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIMENTO' },
                   referenciaNota: { type: 'string', example: 'NF-12345' },
                   dataEnvio: { type: 'string', format: 'date-time', example: '2025-01-15T10:30:00Z' }
                 }
@@ -359,7 +359,7 @@ const swaggerDocument = {
           nomeCliente: { type: 'string', example: 'João Silva' },
           valor: { type: 'number', example: 150.50 },
           data: { type: 'string', format: 'date-time', example: '2025-01-15T10:30:00Z' },
-          status: { type: 'string', enum: ['RECEBIDO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIDO' },
+          status: { type: 'string', enum: ['RECEBIMENTO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIMENTO' },
           referenciaNota: { type: 'string', nullable: true, example: 'NF-12345' },
           dataEnvio: { type: 'string', format: 'date-time', nullable: true, example: '2025-01-16T14:00:00Z' }
         }
@@ -478,7 +478,7 @@ app.post('/pedidos', async (req, res) => {
       emailCliente,
       nomeCliente,
       valor,
-      status = 'RECEBIDO',
+      status = 'RECEBIMENTO',
       referenciaNota,
       dataEnvio
     } = req.body;

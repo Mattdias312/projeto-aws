@@ -1,0 +1,11 @@
+{
+  "name": "lambda-preparacao",
+  "version": "1.0.0",
+  "description": "Lambda para atualizar status do pedido para PREPARACAO",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.939.0",
+    "@aws-sdk/lib-dynamodb": "^3.939.0"
+  }
+}
+
