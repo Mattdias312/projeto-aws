@@ -10,25 +10,14 @@ const { randomUUID } = require('crypto');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Configuração AWS com variáveis de ambiente
-// Se as credenciais estiverem definidas nas variáveis de ambiente, usa-as
-// Caso contrário, o AWS SDK tentará detectar automaticamente (IAM role, arquivo de credenciais, etc.)
+// Configuração AWS - usando detecção automática de credenciais
+// O AWS SDK detectará automaticamente credenciais através de:
+// 1. IAM Role (se estiver rodando em EC2/ECS/Lambda)
+// 2. Arquivo de credenciais (~/.aws/credentials)
+// 3. Variáveis de ambiente padrão do AWS CLI
 const awsConfig = {
   region: process.env.AWS_REGION || 'us-east-1',
 };
-
-// Só define credenciais explicitamente se as variáveis de ambiente estiverem definidas
-if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-  awsConfig.credentials = {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  };
-  
-  // sessionToken é opcional (apenas para credenciais temporárias)
-  if (process.env.AWS_SESSION_TOKEN) {
-    awsConfig.credentials.sessionToken = process.env.AWS_SESSION_TOKEN;
-  }
-}
 
 const dynamoClient = new DynamoDBClient(awsConfig);
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
