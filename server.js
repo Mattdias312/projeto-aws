@@ -12,23 +12,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 // Configuração AWS com variáveis de ambiente
 const dynamoClient = new DynamoDBClient({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    sessionToken: process.env.AWS_SESSION_TOKEN,
-  }
+  region: process.env.AWS_REGION
+  
 });
 
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 
 const s3Client = new S3Client({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    sessionToken: process.env.AWS_SESSION_TOKEN,
-  }
+  region: process.env.AWS_REGION
 });
 
 const TABLE_NAME = process.env.DYNAMODB_TABLE_NAME;
