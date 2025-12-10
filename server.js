@@ -12,10 +12,16 @@ const { randomUUID } = require('crypto');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// IMPORTANTE: Remover credenciais AWS inválidas do ambiente
-// O dotenv pode ter carregado credenciais expiradas do arquivo .env
-// Isso força o AWS SDK a usar IAM Role (prioridade) ou arquivo ~/.aws/credentials
-const awsEnvVars = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN'];
+// IMPORTANTE: Remover TODAS as credenciais AWS do ambiente
+// Isso força o uso da IAM Role (EC2 Instance Profile) como prioridade
+const awsEnvVars = [
+  'AWS_ACCESS_KEY_ID', 
+  'AWS_SECRET_ACCESS_KEY', 
+  'AWS_SESSION_TOKEN', 
+  'AWS_SECURITY_TOKEN',
+  'AWS_PROFILE',
+  'AWS_SHARED_CREDENTIALS_FILE'
+];
 let removedVars = [];
 awsEnvVars.forEach(key => {
   if (process.env[key]) {
@@ -25,19 +31,21 @@ awsEnvVars.forEach(key => {
 });
 
 if (removedVars.length > 0) {
-  console.log(`⚠️  Removidas variáveis de ambiente AWS inválidas: ${removedVars.join(', ')}`);
-  console.log(`   O AWS SDK usará IAM Role ou arquivo ~/.aws/credentials`);
+  console.log(`⚠️  Removidas variáveis de ambiente AWS: ${removedVars.join(', ')}`);
+  console.log(`   O AWS SDK tentará usar IAM Role primeiro, depois ~/.aws/credentials`);
+} else {
+  console.log(`ℹ️  Nenhuma variável de ambiente AWS encontrada. Usando detecção automática.`);
 }
 
 // Configuração AWS - sem credenciais explícitas
 // O AWS SDK detectará automaticamente na seguinte ordem:
 // 1. IAM Role (EC2 Instance Profile) - PRIORIDADE MÁXIMA
-// 2. Arquivo de credenciais (~/.aws/credentials)
-// 3. Perfil AWS configurado (~/.aws/config)
+// 2. Arquivo de credenciais (~/.aws/credentials) - pode ter credenciais inválidas
 // NOTA: Variáveis de ambiente AWS_* foram removidas acima
 const awsConfig = {
   region: process.env.AWS_REGION || 'us-east-1',
   // Não passar credentials - deixar o SDK usar detecção automática
+  // Se houver erro, pode ser que ~/.aws/credentials tenha credenciais inválidas
 };
 
 const dynamoClient = new DynamoDBClient(awsConfig);
@@ -508,16 +516,22 @@ app.post('/pedidos', async (req, res) => {
     
     // Mensagem mais específica para erros de credenciais AWS
     let errorMessage = error.message;
+    let solution = '';
+    
     if (error.name === 'UnrecognizedClientException' || error.message.includes('security token')) {
-      errorMessage = 'Erro de autenticação AWS: As credenciais detectadas automaticamente estão inválidas ou expiradas. ' +
-        'Verifique se: (1) A instância EC2 tem uma IAM Role válida com permissões para DynamoDB e S3, ' +
-        'ou (2) As credenciais em ~/.aws/credentials estão corretas e não expiradas. ' +
-        'Variáveis de ambiente AWS_* foram ignoradas para evitar uso de credenciais inválidas.';
+      errorMessage = 'Erro de autenticação AWS: Credenciais inválidas ou expiradas detectadas.';
+      solution = 'SOLUÇÃO: Na instância EC2, execute um dos seguintes:\n' +
+        '1. Se tiver IAM Role: Verifique se a role está anexada e tem permissões para DynamoDB e S3\n' +
+        '2. Se usar ~/.aws/credentials: Remova ou atualize credenciais inválidas:\n' +
+        '   rm ~/.aws/credentials  # Remove credenciais inválidas\n' +
+        '   # Ou edite o arquivo e atualize com credenciais válidas\n' +
+        '3. Verifique se há um arquivo .env com credenciais inválidas e remova as variáveis AWS_*';
     }
     
     res.status(500).json({ 
       error: 'Erro ao criar pedido', 
-      details: errorMessage 
+      details: errorMessage,
+      solution: solution || undefined
     });
   }
 });
