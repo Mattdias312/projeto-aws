@@ -10,11 +10,18 @@ const { randomUUID } = require('crypto');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Limpar variáveis de ambiente AWS inválidas para forçar uso de IAM Role ou arquivo de credenciais
+// Isso garante que não usaremos credenciais expiradas ou inválidas
+delete process.env.AWS_ACCESS_KEY_ID;
+delete process.env.AWS_SECRET_ACCESS_KEY;
+delete process.env.AWS_SESSION_TOKEN;
+delete process.env.AWS_SECURITY_TOKEN;
+
 // Configuração AWS - usando detecção automática de credenciais
 // O AWS SDK detectará automaticamente credenciais através de:
-// 1. IAM Role (se estiver rodando em EC2/ECS/Lambda)
+// 1. IAM Role (se estiver rodando em EC2/ECS/Lambda) - PRIORIDADE
 // 2. Arquivo de credenciais (~/.aws/credentials)
-// 3. Variáveis de ambiente padrão do AWS CLI
+// 3. Perfil AWS configurado (~/.aws/config)
 const awsConfig = {
   region: process.env.AWS_REGION || 'us-east-1',
 };
@@ -342,6 +349,56 @@ const swaggerDocument = {
 // Swagger UI
 app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
+// Endpoint de diagnóstico AWS
+app.get('/health/aws', async (req, res) => {
+  try {
+    const diagnostics = {
+      timestamp: new Date().toISOString(),
+      region: awsConfig.region,
+      dynamodbTable: TABLE_NAME || 'NÃO DEFINIDA',
+      s3Bucket: BUCKET_NAME || 'NÃO DEFINIDO',
+      checks: {}
+    };
+
+    // Teste DynamoDB
+    try {
+      const testCommand = new ScanCommand({
+        TableName: TABLE_NAME,
+        Limit: 1
+      });
+      await docClient.send(testCommand);
+      diagnostics.checks.dynamodb = { status: 'OK', message: 'Conexão com DynamoDB funcionando' };
+    } catch (error) {
+      diagnostics.checks.dynamodb = { 
+        status: 'ERRO', 
+        message: error.message,
+        errorType: error.name 
+      };
+    }
+
+    // Teste S3
+    try {
+      const testCommand = new ListBucketsCommand({});
+      await s3Client.send(testCommand);
+      diagnostics.checks.s3 = { status: 'OK', message: 'Conexão com S3 funcionando' };
+    } catch (error) {
+      diagnostics.checks.s3 = { 
+        status: 'ERRO', 
+        message: error.message,
+        errorType: error.name 
+      };
+    }
+
+    const allOk = Object.values(diagnostics.checks).every(check => check.status === 'OK');
+    res.status(allOk ? 200 : 503).json(diagnostics);
+  } catch (error) {
+    res.status(500).json({ 
+      error: 'Erro ao verificar saúde AWS', 
+      details: error.message 
+    });
+  }
+});
+
 // POST - Criar novo pedido
 app.post('/pedidos', async (req, res) => {
   try {
@@ -388,7 +445,10 @@ app.post('/pedidos', async (req, res) => {
     // Mensagem mais específica para erros de credenciais AWS
     let errorMessage = error.message;
     if (error.name === 'UnrecognizedClientException' || error.message.includes('security token')) {
-      errorMessage = 'Erro de autenticação AWS: Verifique se as credenciais estão corretas e válidas. Se estiver usando credenciais temporárias, verifique se o token de sessão não expirou.';
+      errorMessage = 'Erro de autenticação AWS: As credenciais detectadas automaticamente estão inválidas ou expiradas. ' +
+        'Verifique se: (1) A instância EC2 tem uma IAM Role válida com permissões para DynamoDB e S3, ' +
+        'ou (2) As credenciais em ~/.aws/credentials estão corretas e não expiradas. ' +
+        'Variáveis de ambiente AWS_* foram ignoradas para evitar uso de credenciais inválidas.';
     }
     
     res.status(500).json({ 
@@ -626,6 +686,15 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`Documentação Swagger disponível em http://localhost:${PORT}/swagger`);
+  console.log(`\n📋 Configuração AWS:`);
+  console.log(`   Região: ${awsConfig.region}`);
+  console.log(`   Tabela DynamoDB: ${TABLE_NAME || 'NÃO DEFINIDA'}`);
+  console.log(`   Bucket S3: ${BUCKET_NAME || 'NÃO DEFINIDO'}`);
+  console.log(`   Método de autenticação: Detecção automática (IAM Role / ~/.aws/credentials)`);
+  console.log(`\n⚠️  Certifique-se de que:`);
+  console.log(`   1. A instância EC2 tem uma IAM Role com permissões para DynamoDB e S3`);
+  console.log(`   2. Ou configure credenciais válidas em ~/.aws/credentials`);
+  console.log(`\n`);
 });
 
 module.exports = app;
