@@ -11,28 +11,39 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Configuração AWS com variáveis de ambiente
-const dynamoClient = new DynamoDBClient({
-  region: process.env.AWS_REGION,
-  credentials: {
+// Se as credenciais estiverem definidas nas variáveis de ambiente, usa-as
+// Caso contrário, o AWS SDK tentará detectar automaticamente (IAM role, arquivo de credenciais, etc.)
+const awsConfig = {
+  region: process.env.AWS_REGION || 'us-east-1',
+};
+
+// Só define credenciais explicitamente se as variáveis de ambiente estiverem definidas
+if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+  awsConfig.credentials = {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    sessionToken: process.env.AWS_SESSION_TOKEN,
+  };
+  
+  // sessionToken é opcional (apenas para credenciais temporárias)
+  if (process.env.AWS_SESSION_TOKEN) {
+    awsConfig.credentials.sessionToken = process.env.AWS_SESSION_TOKEN;
   }
-});
+}
 
+const dynamoClient = new DynamoDBClient(awsConfig);
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-
-const s3Client = new S3Client({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    sessionToken: process.env.AWS_SESSION_TOKEN,
-  }
-});
+const s3Client = new S3Client(awsConfig);
 
 const TABLE_NAME = process.env.DYNAMODB_TABLE_NAME;
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;
+
+// Validação de variáveis de ambiente essenciais
+if (!TABLE_NAME) {
+  console.warn('⚠️  AVISO: DYNAMODB_TABLE_NAME não está definido. Operações do DynamoDB podem falhar.');
+}
+if (!BUCKET_NAME) {
+  console.warn('⚠️  AVISO: S3_BUCKET_NAME não está definido. Operações do S3 podem falhar.');
+}
 
 app.use(express.json());
 
@@ -384,7 +395,17 @@ app.post('/pedidos', async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao criar pedido:', error);
-    res.status(500).json({ error: 'Erro ao criar pedido', details: error.message });
+    
+    // Mensagem mais específica para erros de credenciais AWS
+    let errorMessage = error.message;
+    if (error.name === 'UnrecognizedClientException' || error.message.includes('security token')) {
+      errorMessage = 'Erro de autenticação AWS: Verifique se as credenciais estão corretas e válidas. Se estiver usando credenciais temporárias, verifique se o token de sessão não expirou.';
+    }
+    
+    res.status(500).json({ 
+      error: 'Erro ao criar pedido', 
+      details: errorMessage 
+    });
   }
 });
 
