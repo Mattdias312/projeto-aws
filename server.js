@@ -1,6 +1,4 @@
-// Carregar variáveis de ambiente do .env
 require('dotenv').config();
-
 const express = require('express');
 const multer = require('multer');
 const swaggerUi = require('swagger-ui-express');
@@ -12,56 +10,29 @@ const { randomUUID } = require('crypto');
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-// IMPORTANTE: Remover TODAS as credenciais AWS do ambiente
-// Isso força o uso da IAM Role (EC2 Instance Profile) como prioridade
-const awsEnvVars = [
-  'AWS_ACCESS_KEY_ID', 
-  'AWS_SECRET_ACCESS_KEY', 
-  'AWS_SESSION_TOKEN', 
-  'AWS_SECURITY_TOKEN',
-  'AWS_PROFILE',
-  'AWS_SHARED_CREDENTIALS_FILE'
-];
-let removedVars = [];
-awsEnvVars.forEach(key => {
-  if (process.env[key]) {
-    removedVars.push(key);
-    delete process.env[key];
+// Configuração AWS com variáveis de ambiente
+const dynamoClient = new DynamoDBClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    sessionToken: process.env.AWS_SESSION_TOKEN,
   }
 });
 
-if (removedVars.length > 0) {
-  console.log(`⚠️  Removidas variáveis de ambiente AWS: ${removedVars.join(', ')}`);
-  console.log(`   O AWS SDK tentará usar IAM Role primeiro, depois ~/.aws/credentials`);
-} else {
-  console.log(`ℹ️  Nenhuma variável de ambiente AWS encontrada. Usando detecção automática.`);
-}
-
-// Configuração AWS - sem credenciais explícitas
-// O AWS SDK detectará automaticamente na seguinte ordem:
-// 1. IAM Role (EC2 Instance Profile) - PRIORIDADE MÁXIMA
-// 2. Arquivo de credenciais (~/.aws/credentials) - pode ter credenciais inválidas
-// NOTA: Variáveis de ambiente AWS_* foram removidas acima
-const awsConfig = {
-  region: process.env.AWS_REGION || 'us-east-1',
-  // Não passar credentials - deixar o SDK usar detecção automática
-  // Se houver erro, pode ser que ~/.aws/credentials tenha credenciais inválidas
-};
-
-const dynamoClient = new DynamoDBClient(awsConfig);
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
-const s3Client = new S3Client(awsConfig);
+
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    sessionToken: process.env.AWS_SESSION_TOKEN,
+  }
+});
 
 const TABLE_NAME = process.env.DYNAMODB_TABLE_NAME;
 const BUCKET_NAME = process.env.S3_BUCKET_NAME;
-
-// Validação de variáveis de ambiente essenciais
-if (!TABLE_NAME) {
-  console.warn('⚠️  AVISO: DYNAMODB_TABLE_NAME não está definido. Operações do DynamoDB podem falhar.');
-}
-if (!BUCKET_NAME) {
-  console.warn('⚠️  AVISO: S3_BUCKET_NAME não está definido. Operações do S3 podem falhar.');
-}
 
 app.use(express.json());
 
@@ -95,7 +66,7 @@ const swaggerDocument = {
                   emailCliente: { type: 'string', example: 'cliente@email.com' },
                   nomeCliente: { type: 'string', example: 'João Silva' },
                   valor: { type: 'number', example: 150.50 },
-                  status: { type: 'string', enum: ['RECEBIMENTO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIMENTO' },
+                  status: { type: 'string', enum: ['RECEBIDO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIDO' },
                   referenciaNota: { type: 'string', example: 'NF-12345' },
                   dataEnvio: { type: 'string', format: 'date-time', example: '2025-01-15T10:30:00Z' }
                 }
@@ -359,7 +330,7 @@ const swaggerDocument = {
           nomeCliente: { type: 'string', example: 'João Silva' },
           valor: { type: 'number', example: 150.50 },
           data: { type: 'string', format: 'date-time', example: '2025-01-15T10:30:00Z' },
-          status: { type: 'string', enum: ['RECEBIMENTO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIMENTO' },
+          status: { type: 'string', enum: ['RECEBIDO', 'PREPARACAO', 'ENVIADO'], example: 'RECEBIDO' },
           referenciaNota: { type: 'string', nullable: true, example: 'NF-12345' },
           dataEnvio: { type: 'string', format: 'date-time', nullable: true, example: '2025-01-16T14:00:00Z' }
         }
@@ -371,106 +342,6 @@ const swaggerDocument = {
 // Swagger UI
 app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-// Endpoint de diagnóstico AWS
-app.get('/health/aws', async (req, res) => {
-  try {
-    const diagnostics = {
-      timestamp: new Date().toISOString(),
-      region: awsConfig.region,
-      dynamodbTable: TABLE_NAME || 'NÃO DEFINIDA',
-      s3Bucket: BUCKET_NAME || 'NÃO DEFINIDO',
-      authentication: {
-        method: 'Detecção automática',
-        note: 'Variáveis de ambiente AWS_* foram removidas. Usando IAM Role ou ~/.aws/credentials'
-      },
-      checks: {}
-    };
-
-    // Tentar verificar se IAM Role está disponível (apenas em EC2)
-    try {
-      const http = require('http');
-      const metadataUrl = 'http://169.254.169.254/latest/meta-data/iam/security-credentials/';
-      
-      await new Promise((resolve) => {
-        const request = http.get(metadataUrl, { timeout: 1000 }, (response) => {
-          let data = '';
-          response.on('data', chunk => data += chunk);
-          response.on('end', () => {
-            if (response.statusCode === 200 && data.trim()) {
-              diagnostics.authentication.iamRole = data.trim().split('\n')[0];
-              diagnostics.authentication.method = 'IAM Role detectada';
-            }
-            resolve();
-          });
-        });
-        request.on('error', () => {
-          // Não é EC2 ou IAM Role não disponível - isso é normal
-          diagnostics.authentication.iamRole = 'Não detectada (pode estar usando ~/.aws/credentials)';
-          resolve();
-        });
-        request.on('timeout', () => {
-          request.destroy();
-          diagnostics.authentication.iamRole = 'Não detectada (timeout ao verificar)';
-          resolve();
-        });
-      });
-    } catch (e) {
-      // Ignorar erros de verificação de IAM Role
-      diagnostics.authentication.iamRole = 'Não detectada (erro ao verificar)';
-    }
-
-    // Teste DynamoDB
-    try {
-      if (!TABLE_NAME) {
-        diagnostics.checks.dynamodb = { 
-          status: 'ERRO', 
-          message: 'DYNAMODB_TABLE_NAME não está definido' 
-        };
-      } else {
-        const testCommand = new ScanCommand({
-          TableName: TABLE_NAME,
-          Limit: 1
-        });
-        await docClient.send(testCommand);
-        diagnostics.checks.dynamodb = { status: 'OK', message: 'Conexão com DynamoDB funcionando' };
-      }
-    } catch (error) {
-      diagnostics.checks.dynamodb = { 
-        status: 'ERRO', 
-        message: error.message,
-        errorType: error.name,
-        suggestion: error.name === 'UnrecognizedClientException' 
-          ? 'Verifique se a IAM Role tem permissões para DynamoDB ou configure ~/.aws/credentials'
-          : 'Verifique as configurações do DynamoDB'
-      };
-    }
-
-    // Teste S3
-    try {
-      const testCommand = new ListBucketsCommand({});
-      await s3Client.send(testCommand);
-      diagnostics.checks.s3 = { status: 'OK', message: 'Conexão com S3 funcionando' };
-    } catch (error) {
-      diagnostics.checks.s3 = { 
-        status: 'ERRO', 
-        message: error.message,
-        errorType: error.name,
-        suggestion: error.name === 'UnrecognizedClientException'
-          ? 'Verifique se a IAM Role tem permissões para S3 ou configure ~/.aws/credentials'
-          : 'Verifique as configurações do S3'
-      };
-    }
-
-    const allOk = Object.values(diagnostics.checks).every(check => check.status === 'OK');
-    res.status(allOk ? 200 : 503).json(diagnostics);
-  } catch (error) {
-    res.status(500).json({ 
-      error: 'Erro ao verificar saúde AWS', 
-      details: error.message 
-    });
-  }
-});
-
 // POST - Criar novo pedido
 app.post('/pedidos', async (req, res) => {
   try {
@@ -478,7 +349,7 @@ app.post('/pedidos', async (req, res) => {
       emailCliente,
       nomeCliente,
       valor,
-      status = 'RECEBIMENTO',
+      status = 'RECEBIDO',
       referenciaNota,
       dataEnvio
     } = req.body;
@@ -513,26 +384,7 @@ app.post('/pedidos', async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao criar pedido:', error);
-    
-    // Mensagem mais específica para erros de credenciais AWS
-    let errorMessage = error.message;
-    let solution = '';
-    
-    if (error.name === 'UnrecognizedClientException' || error.message.includes('security token')) {
-      errorMessage = 'Erro de autenticação AWS: Credenciais inválidas ou expiradas detectadas.';
-      solution = 'SOLUÇÃO: Na instância EC2, execute um dos seguintes:\n' +
-        '1. Se tiver IAM Role: Verifique se a role está anexada e tem permissões para DynamoDB e S3\n' +
-        '2. Se usar ~/.aws/credentials: Remova ou atualize credenciais inválidas:\n' +
-        '   rm ~/.aws/credentials  # Remove credenciais inválidas\n' +
-        '   # Ou edite o arquivo e atualize com credenciais válidas\n' +
-        '3. Verifique se há um arquivo .env com credenciais inválidas e remova as variáveis AWS_*';
-    }
-    
-    res.status(500).json({ 
-      error: 'Erro ao criar pedido', 
-      details: errorMessage,
-      solution: solution || undefined
-    });
+    res.status(500).json({ error: 'Erro ao criar pedido', details: error.message });
   }
 });
 
@@ -764,15 +616,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`Documentação Swagger disponível em http://localhost:${PORT}/swagger`);
-  console.log(`\n📋 Configuração AWS:`);
-  console.log(`   Região: ${awsConfig.region}`);
-  console.log(`   Tabela DynamoDB: ${TABLE_NAME || 'NÃO DEFINIDA'}`);
-  console.log(`   Bucket S3: ${BUCKET_NAME || 'NÃO DEFINIDO'}`);
-  console.log(`   Método de autenticação: Detecção automática (IAM Role / ~/.aws/credentials)`);
-  console.log(`\n⚠️  Certifique-se de que:`);
-  console.log(`   1. A instância EC2 tem uma IAM Role com permissões para DynamoDB e S3`);
-  console.log(`   2. Ou configure credenciais válidas em ~/.aws/credentials`);
-  console.log(`\n`);
 });
 
 module.exports = app;
